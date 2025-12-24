@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain.agents import create_react_agent, AgentExecutor
@@ -10,8 +9,12 @@ from langchain.memory import ConversationBufferMemory
 # 1. CONFIGURACIÓN DE PÁGINA
 st.set_page_config(page_title="Heimdall AI", page_icon="👁️", layout="wide")
 
-# Cargar llaves
-load_dotenv()
+# --- TRUCO PARA LA NUBE: Cargar Secretos al Entorno ---
+# Esto hace que funcione tanto en tu PC (.env) como en la Nube (Secrets)
+if "GROQ_API_KEY" in st.secrets:
+    os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+if "TAVILY_API_KEY" in st.secrets:
+    os.environ["TAVILY_API_KEY"] = st.secrets["TAVILY_API_KEY"]
 
 # ==========================================
 # 🎨 BARRA LATERAL
@@ -60,42 +63,39 @@ if len(st.session_state.messages) == 0:
 # --- CONFIGURACIÓN DEL CEREBRO ---
 if "agent_executor" not in st.session_state:
     
-    if not os.getenv("GROQ_API_KEY") or not os.getenv("TAVILY_API_KEY"):
-        st.error("❌ Faltan las claves en el archivo .env")
+    # Verificación final de claves
+    if not os.environ.get("GROQ_API_KEY") or not os.environ.get("TAVILY_API_KEY"):
+        st.error("❌ Error: No se encontraron las API KEYS. Revisa los 'Secrets' en Streamlit Cloud.")
         st.stop()
     
     llm = ChatGroq(model_name="llama-3.3-70b-versatile", temperature=0)
     tools = [TavilySearchResults(max_results=1)]
     
-    # === PROMPT ANTI-BUCLES ===
-    # Fíjate en la sección "RESPONSE FORMAT"
+    # === PROMPT CORREGIDO (CON TOOL_NAMES) ===
     template = f'''{user_persona}
     
     TOOLS:
     ------
     You have access to the following tools:
     {{tools}}
-
+    
     IMPORTANT RULES:
-    1. You have access to the conversation history.
-    2. IF THE USER IS JUST CHATTING, ASKING FOR ADVICE, OR GREETING (e.g., "Hello", "How do I dissect an animal?", "I feel bad"), DO NOT USE THE SEARCH TOOL unless strictly necessary for facts.
+    1. IF THE USER IS JUST CHATTING (e.g., "Hello", "How are you?"), DO NOT USE TOOLS.
+    2. USE THE FORMAT BELOW EXACTLY.
     
-    RESPONSE FORMAT (CHOOSE ONE):
+    FORMAT INSTRUCTIONS:
+    To use a tool, please use the following format:
     
-    OPTION 1: IF YOU NEED TO SEARCH GOOGLE:
-    Question: the input question
-    Thought: I need to search for facts...
-    Action: tavily_search_results_json
-    Action Input: "search query"
-    Observation: ...
+    Thought: Do I need to use a tool? Yes
+    Action: the action to take, should be one of [{{tool_names}}] 
+    Action Input: the input to the action
+    Observation: the result of the action
     
-    OPTION 2: IF NO SEARCH IS NEEDED (Chat, logic, refusals, greetings):
-    Question: the input question
-    Thought: I can answer this without tools...
-    Final Answer: [Write your full answer here directly]
-
-    WARNING: NEVER write "Action: None" or "Action: N/A". If no tool is needed, WRITE "Final Answer:" IMMEDIATELY after the Thought.
-
+    If you do not need to use a tool, use this format:
+    
+    Thought: Do I need to use a tool? No
+    Final Answer: [your response here]
+    
     Begin!
 
     Previous conversation:
@@ -105,7 +105,9 @@ if "agent_executor" not in st.session_state:
     Thought:{{agent_scratchpad}}
     '''
     
+    # Aquí es donde fallaba antes, ahora ya tiene tool_names
     prompt = PromptTemplate.from_template(template)
+    
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     agent = create_react_agent(llm, tools, prompt)
     
@@ -128,11 +130,9 @@ if prompt_user := st.chat_input("Escribe aquí..."):
         placeholder = st.empty()
         with st.spinner("🧠 Pensando..."):
             try:
-                # El parámetro handle_parsing_errors=True ayuda a recuperar si falla el formato
                 response = st.session_state.agent_executor.invoke({"input": prompt_user})
                 output = response["output"]
                 placeholder.markdown(output)
                 st.session_state.messages.append({"role": "assistant", "content": output})
             except Exception as e:
-                # Si falla todo, mostramos el error limpio
                 placeholder.error(f"❌ Error: {e}")
