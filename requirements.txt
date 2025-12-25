@@ -1,9 +1,9 @@
 streamlit
-langchain
-langchain-community
-langchain-core
-langchain-groq
-langchain-huggingface
+langchain>=0.2.0
+langchain-community>=0.2.0
+langchain-core>=0.2.0
+langchain-groq>=0.1.5
+langchain-huggingface>=0.0.3
 tavily-python
 python-dotenv
 pypdf
