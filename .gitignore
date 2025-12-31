@@ -1,2 +1,22 @@
+# --- SEGURIDAD (CRÍTICO) ---
 .env
+.env.local
+*.key
+KEYS.txt
+
+# --- PYTHON ---
 venv/
+__pycache__/
+*.pyc
+
+# --- FLUTTER (Basura de compilación) ---
+heimdall_mobile/build/
+heimdall_mobile/.dart_tool/
+heimdall_mobile/.flutter-plugins
+heimdall_mobile/.flutter-plugins-dependencies
+heimdall_mobile/.pub-cache/
+heimdall_mobile/.packages
+heimdall_mobile/pubspec.lock
+
+# --- VS CODE ---
+.vscode/
