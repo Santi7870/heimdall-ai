@@ -20,7 +20,7 @@ from langchain.tools.retriever import create_retriever_tool
 # Cargar claves
 load_dotenv()
 
-app = FastAPI(title="Heimdall API V-Final", description="Backend con Reset")
+app = FastAPI(title="Heimdall API V8", description="Smart Hybrid Router")
 
 app.add_middleware(
     CORSMiddleware,
@@ -70,10 +70,8 @@ def generar_audio_base64(texto):
 
 @app.post("/reset")
 def reset_memory():
-    """Borra la memoria del PDF y reinicia el estado"""
     global GLOBAL_RETRIEVER
     GLOBAL_RETRIEVER = None
-    print("🧹 MEMORIA BORRADA: PDF eliminado del servidor.")
     return {"status": "ok", "message": "Memoria reiniciada."}
 
 @app.post("/upload_pdf")
@@ -83,18 +81,14 @@ async def upload_pdf(file: UploadFile = File(...)):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
-        
         loader = PyPDFLoader(tmp_path)
         docs = loader.load()
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         splits = splitter.split_documents(docs)
-        
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
         vectorstore = FAISS.from_documents(splits, embeddings)
         GLOBAL_RETRIEVER = vectorstore.as_retriever()
-        
         os.remove(tmp_path)
-        print("✅ PDF Cargado")
         return {"status": "ok", "message": "PDF procesado."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -108,50 +102,74 @@ async def chat_endpoint(
     global GLOBAL_RETRIEVER
     respuesta = ""
     
+    # 1. VISIÓN
     if image:
         print("📸 Modo Visión")
         contents = await image.read()
         respuesta = vision_hf_logic(contents, prompt)
+    
     else:
-        print("🧠 Modo Agente")
-        try:
-            llm = ChatGroq(model_name="llama-3.3-70b-versatile", temperature=0)
-            tools = [TavilySearchResults(max_results=1)]
-            pdf_notice = "No hay PDF cargado."
-            
-            if GLOBAL_RETRIEVER:
-                tools.append(create_retriever_tool(GLOBAL_RETRIEVER, "search_pdf", "Busca información en el PDF."))
-                pdf_notice = "HAY UN PDF CARGADO."
+        # --- LÓGICA HÍBRIDA ---
+        
+        # Palabras que ACTIVAN al Agente (Herramientas)
+        triggers_busqueda = ["busca", "investiga", "precio", "clima", "noticias", "quien es el actual", "cuanto vale", "en internet"]
+        triggers_pdf = ["pdf", "documento", "archivo", "que dice el texto", "resumen del", "analiza el"]
+        
+        prompt_lower = prompt.lower()
+        
+        # ¿Necesitamos herramientas?
+        necesita_internet = any(t in prompt_lower for t in triggers_busqueda)
+        necesita_pdf = (GLOBAL_RETRIEVER is not None) and any(t in prompt_lower for t in triggers_pdf)
+        
+        if necesita_internet or necesita_pdf:
+            print("🧠 MODO AGENTE (Lento pero potente)")
+            try:
+                # Usamos el modelo 70B para tareas complejas
+                llm = ChatGroq(model_name="llama-3.3-70b-versatile", temperature=0)
+                tools = [TavilySearchResults(max_results=1)]
+                pdf_notice = "No hay PDF."
+                if GLOBAL_RETRIEVER:
+                    tools.append(create_retriever_tool(GLOBAL_RETRIEVER, "search_pdf", "Busca información en el PDF."))
+                    pdf_notice = "HAY UN PDF."
 
-            plantilla_react = """
-            Eres Heimdall. Herramientas: {tools}.
-            REGLAS:
-            1. Saludos/Identidad -> Responde DIRECTO sin herramientas.
-            2. PDF/Internet -> Usa {tool_names}.
-            3. ANTI-BUCLE: Si usas search_pdf y no está la info, NO BUSQUES DE NUEVO.
-            4. JAMÁS dejes 'Action' vacío.
-
-            FORMATO:
-            Question: pregunta
-            Thought: ¿Necesito herramienta?
-            Action: herramienta (o vacío si respondes directo)
-            Action Input: búsqueda
-            Observation: resultado
-            ...
-            Final Answer: respuesta en ESPAÑOL.
-
-            Personalidad: {personality}
-            Contexto PDF: {pdf_notice}
-            Question: {input}
-            Thought:{agent_scratchpad}
-            """
-            prompt_template = PromptTemplate.from_template(plantilla_react)
-            agent = create_react_agent(llm, tools, prompt_template)
-            executor = AgentExecutor(agent=agent, tools=tools, handle_parsing_errors=True, verbose=True, max_iterations=4)
-            res = executor.invoke({"input": prompt, "personality": personality, "pdf_notice": pdf_notice})
-            respuesta = res["output"]
-        except Exception as e:
-            respuesta = "Error técnico: " + str(e)
+                plantilla = """
+                Eres Heimdall. Herramientas: {tools}.
+                Usa search_pdf SOLO si preguntan por el documento.
+                Usa tavily SOLO si preguntan algo actual de internet.
+                Action: herramienta
+                Action Input: búsqueda
+                Final Answer: respuesta español.
+                
+                Personalidad: {personality}
+                Contexto PDF: {pdf_notice}
+                Question: {input}
+                Thought:{agent_scratchpad}
+                """
+                prompt_template = PromptTemplate.from_template(plantilla)
+                agent = create_react_agent(llm, tools, prompt_template)
+                executor = AgentExecutor(agent=agent, tools=tools, handle_parsing_errors=True, max_iterations=5)
+                res = executor.invoke({"input": prompt, "personality": personality, "pdf_notice": pdf_notice})
+                respuesta = res["output"]
+            except Exception as e:
+                respuesta = "Tuve un error buscando eso. Intenta ser más específico."
+        
+        else:
+            print("⚡ MODO CONVERSACIÓN (Rápido y Directo)")
+            # Usamos el modelo 8B (más rápido) para charlar
+            try:
+                fast_llm = ChatGroq(model_name="llama-3.1-8b-instant", temperature=0.7)
+                
+                prompt_directo = f"""
+                Instrucción: Actúa según esta personalidad: '{personality}'.
+                El usuario te dice: '{prompt}'.
+                Responde de forma natural, fluida y en Español. 
+                No menciones que eres una IA a menos que te lo pregunten.
+                No uses herramientas, solo conversa.
+                """
+                msj = fast_llm.invoke(prompt_directo)
+                respuesta = msj.content
+            except Exception as e:
+                respuesta = "Hola, estoy aquí. ¿Qué necesitas?"
 
     audio = generar_audio_base64(respuesta)
     return {"response": respuesta, "audio": audio}
